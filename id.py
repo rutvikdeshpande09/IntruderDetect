@@ -384,7 +384,18 @@ try:
         
         # Record frame if recording
         if is_recording and camera_writer is not None:
-            camera_writer.write(frame)
+            # Convert from XRGB8888 (4 channels) to BGR (3 channels) for video writer
+            # XRGB8888 format from Picamera2: channels are [X, R, G, B] where X is unused
+            if len(frame.shape) == 3 and frame.shape[2] == 4:  # XRGB8888 format (4 channels)
+                # Extract RGB channels (skip the X channel at index 0) and convert to BGR
+                rgb_frame = frame[:, :, 1:4]  # Get R, G, B channels
+                bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+            elif len(frame.shape) == 3 and frame.shape[2] == 3:  # Already 3 channels
+                # Assume it's RGB and convert to BGR
+                bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            else:
+                bgr_frame = frame
+            camera_writer.write(bgr_frame)
         
         # Draw detection box
         display_frame = frame.copy()
