@@ -191,3 +191,18 @@ You may need to install one of these tools on your Raspberry Pi:
 # Option 1: Install scrot (recommended)sudo apt-get install scrot# Option 2: Install ImageMagicksudo apt-get install imagemagick# Option 3: Install Pillow for Pythonpip3 install Pillow
 The system will automatically try each method until one works. The screenshot method should capture the full screen content, including the desktop background and all windows, not just the cursor.
 Run the program again; it should now properly capture and combine the screen recording with the camera video.
+
+Improved the screenshot capture with these changes:
+Improvements:
+Framebuffer capture first: Tries /dev/fb0 first, which often works better on Raspberry Pi
+Black frame detection: Validates that screenshots contain content (not just black pixels)
+Better method ordering: Prioritizes methods that work better on Raspberry Pi
+Improved error handling: More detailed logging to identify which method works
+To fix the black screen issue:
+The black screen suggests the screenshot tools aren't capturing the display. Try installing one of these on your Raspberry Pi:
+# Option 1: Install scrot (recommended for Raspberry Pi)sudo apt-get install scrot# Option 2: Install ImageMagicksudo apt-get install imagemagick# Option 3: Install x11-apps (includes xwd)sudo apt-get install x11-apps# Option 4: Install netpbm (for xwd conversion)sudo apt-get install netpbm
+The code will now:
+Test screenshots before recording to ensure they're not black
+Try framebuffer capture first (often works on Pi)
+Provide better error messages if all methods fail
+Run the program again and check the console output. It will tell you which screenshot method is being used and whether it's working. If you see warnings about black screenshots, the tool may need different permissions or a different method.
