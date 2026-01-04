@@ -266,20 +266,31 @@ def combine_videos(camera_video_path, screen_video_path, output_path):
     """Combine camera and screen videos side-by-side"""
     try:
         print(f"[INFO] Combining camera and screen recordings...")
+        print(f"[INFO] Camera video: {camera_video_path}")
+        print(f"[INFO] Screen video: {screen_video_path}")
         
-        # Check if screen video exists
+        # Check if both videos exist
+        if not os.path.exists(camera_video_path):
+            print(f"[ERROR] Camera video not found: {camera_video_path}")
+            return None
+        
         if not os.path.exists(screen_video_path):
-            print(f"[WARNING] Screen recording not found: {screen_video_path}")
-            return camera_video_path  # Return camera video if screen doesn't exist
+            print(f"[ERROR] Screen recording not found: {screen_video_path}")
+            return None
         
-        # Check screen video file size (might be empty if recording failed)
+        # Check file sizes
+        camera_size = os.path.getsize(camera_video_path)
         screen_size = os.path.getsize(screen_video_path)
-        if screen_size < 1000:  # Less than 1KB, likely empty
-            print(f"[WARNING] Screen recording appears to be empty ({screen_size} bytes)")
-            return camera_video_path
+        print(f"[INFO] Camera video size: {camera_size} bytes")
+        print(f"[INFO] Screen video size: {screen_size} bytes")
+        
+        # Even if screen is small, try to combine (screen recording is critical)
+        if screen_size < 1000:
+            print(f"[WARNING] Screen recording is small ({screen_size} bytes), but attempting combination anyway")
         
         # Use ffmpeg to combine videos side-by-side
         # Scale both videos to same height and stack horizontally
+        # Handle cases where videos might have different durations
         cmd = [
             'ffmpeg', '-y',
             '-i', camera_video_path,
@@ -289,9 +300,11 @@ def combine_videos(camera_video_path, screen_video_path, output_path):
             '-map', '[v]',
             '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
             '-movflags', '+faststart',
+            '-shortest',  # Use shortest duration if videos differ in length
             output_path
         ]
         
+        print(f"[INFO] Running ffmpeg combination command...")
         result = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
@@ -300,15 +313,26 @@ def combine_videos(camera_video_path, screen_video_path, output_path):
         )
         
         if result.returncode == 0:
-            print(f"[INFO] Videos combined successfully: {output_path}")
-            return output_path
+            if os.path.exists(output_path):
+                output_size = os.path.getsize(output_path)
+                print(f"[SUCCESS] Videos combined successfully: {output_path} ({output_size} bytes)")
+                return output_path
+            else:
+                print(f"[ERROR] Combined video file was not created: {output_path}")
+                return None
         else:
             error_msg = result.stderr.decode()
-            print(f"[WARNING] Video combination failed: {error_msg}")
-            return camera_video_path  # Return camera video if combination fails
+            print(f"[ERROR] Video combination failed!")
+            print(f"[ERROR] FFmpeg error: {error_msg[-500:]}")  # Last 500 chars of error
+            return None
+    except subprocess.TimeoutExpired:
+        print(f"[ERROR] Video combination timed out")
+        return None
     except Exception as e:
         print(f"[ERROR] Error combining videos: {str(e)}")
-        return camera_video_path  # Return camera video on error
+        import traceback
+        traceback.print_exc()
+        return None
 
 def process_and_send_recording(video_path, start_time, screen_video_path=None):
     """Process video and send email in background thread"""
@@ -323,9 +347,16 @@ def process_and_send_recording(video_path, start_time, screen_video_path=None):
             print(f"[ERROR] Camera video file does not exist: {video_path}")
             return
         
-        # Wait a moment for screen recording to finish writing
+        # Wait longer for screen recording to finish writing
         if screen_video_path:
-            time.sleep(2)  # Give screen recording time to finalize
+            print(f"[INFO] Waiting for screen recording to finalize...")
+            time.sleep(3)  # Give screen recording more time to finalize
+            # Check if screen recording file exists
+            if os.path.exists(screen_video_path):
+                screen_size = os.path.getsize(screen_video_path)
+                print(f"[INFO] Screen recording file found: {screen_video_path} ({screen_size} bytes)")
+            else:
+                print(f"[WARNING] Screen recording file not found: {screen_video_path}")
         
         # Create output path for converted video
         base_name = os.path.splitext(video_path)[0]
@@ -336,39 +367,60 @@ def process_and_send_recording(video_path, start_time, screen_video_path=None):
         if convert_video_to_h264(video_path, converted_path):
             final_video_path = converted_path
             
-            # If screen recording exists, combine with camera video
-            if screen_video_path and os.path.exists(screen_video_path):
-                screen_size = os.path.getsize(screen_video_path)
-                if screen_size > 1000:  # Only combine if screen video is not empty
-                    # Convert screen video to H.264 first if needed
+            # ALWAYS try to combine with screen recording if it exists (screen recording is critical)
+            if screen_video_path:
+                print(f"[INFO] Checking screen recording for combination...")
+                if os.path.exists(screen_video_path):
+                    screen_size = os.path.getsize(screen_video_path)
+                    print(f"[INFO] Screen recording found: {screen_size} bytes")
+                    
+                    # Try to combine even if screen is small (might just be blank but cursor visible)
+                    # Convert screen video to H.264 first
                     screen_base = os.path.splitext(screen_video_path)[0]
                     screen_converted = f"{screen_base}_h264.mp4"
                     
                     print(f"[INFO] Converting screen video to H.264...")
+                    screen_converted_success = False
                     if convert_video_to_h264(screen_video_path, screen_converted):
-                        # Combine the converted videos
-                        combined_path = f"{base_name}_combined_h264.mp4"
-                        print(f"[INFO] Combining videos...")
-                        final_video_path = combine_videos(converted_path, screen_converted, combined_path)
-                        
-                        # Clean up intermediate files
-                        if final_video_path == combined_path:
-                            try:
-                                os.remove(converted_path)
-                                os.remove(screen_converted)
-                            except:
-                                pass
+                        screen_converted_success = True
+                        print(f"[INFO] Screen video converted successfully")
                     else:
-                        # Try combining with original screen video
-                        combined_path = f"{base_name}_combined_h264.mp4"
-                        final_video_path = combine_videos(converted_path, screen_video_path, combined_path)
-                        if final_video_path == combined_path:
-                            try:
-                                os.remove(converted_path)
-                            except:
-                                pass
+                        print(f"[WARNING] Screen video conversion failed, trying with original...")
+                    
+                    # Combine the videos
+                    combined_path = f"{base_name}_combined_h264.mp4"
+                    print(f"[INFO] Combining camera and screen videos...")
+                    
+                    # Use converted screen video if available, otherwise use original
+                    screen_to_combine = screen_converted if (screen_converted_success and os.path.exists(screen_converted)) else screen_video_path
+                    
+                    final_video_path = combine_videos(converted_path, screen_to_combine, combined_path)
+                    
+                    # Check if combination was successful
+                    if final_video_path == combined_path and os.path.exists(combined_path):
+                        print(f"[SUCCESS] Videos combined successfully: {combined_path}")
+                        # Clean up intermediate files
+                        try:
+                            os.remove(converted_path)
+                            if screen_converted_success and os.path.exists(screen_converted):
+                                os.remove(screen_converted)
+                            print(f"[INFO] Cleaned up intermediate files")
+                        except Exception as e:
+                            print(f"[WARNING] Could not clean up intermediate files: {e}")
+                    elif final_video_path is None:
+                        print(f"[ERROR] Video combination failed! Using camera video only as fallback")
+                        final_video_path = converted_path  # Fallback to camera only
+                    else:
+                        print(f"[WARNING] Video combination may have failed")
+                        print(f"[INFO] Final video path: {final_video_path}")
+                        if not os.path.exists(final_video_path):
+                            print(f"[ERROR] Final video does not exist, using camera video")
+                            final_video_path = converted_path
                 else:
-                    print(f"[WARNING] Screen recording is empty, sending camera video only")
+                    print(f"[WARNING] Screen recording file does not exist: {screen_video_path}")
+                    print(f"[INFO] Sending camera video only")
+            else:
+                print(f"[INFO] No screen recording path provided, sending camera video only")
             
             # Send the final video
             print(f"[INFO] Final video path: {final_video_path}")
