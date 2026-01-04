@@ -177,20 +177,106 @@ def convert_video_to_h264(input_path, output_path):
         print(f"[ERROR] Video conversion error: {str(e)}")
         return False
 
-def process_and_send_recording(video_path, start_time):
+def combine_videos(camera_video_path, screen_video_path, output_path):
+    """Combine camera and screen videos side-by-side"""
+    try:
+        print(f"[INFO] Combining camera and screen recordings...")
+        
+        # Check if screen video exists
+        if not os.path.exists(screen_video_path):
+            print(f"[WARNING] Screen recording not found: {screen_video_path}")
+            return camera_video_path  # Return camera video if screen doesn't exist
+        
+        # Check screen video file size (might be empty if recording failed)
+        screen_size = os.path.getsize(screen_video_path)
+        if screen_size < 1000:  # Less than 1KB, likely empty
+            print(f"[WARNING] Screen recording appears to be empty ({screen_size} bytes)")
+            return camera_video_path
+        
+        # Use ffmpeg to combine videos side-by-side
+        # Scale both videos to same height and stack horizontally
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', camera_video_path,
+            '-i', screen_video_path,
+            '-filter_complex', 
+            '[0:v]scale=960:-1[v0];[1:v]scale=960:-1[v1];[v0][v1]hstack=inputs=2[v]',
+            '-map', '[v]',
+            '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
+            '-movflags', '+faststart',
+            output_path
+        ]
+        
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=300
+        )
+        
+        if result.returncode == 0:
+            print(f"[INFO] Videos combined successfully: {output_path}")
+            return output_path
+        else:
+            error_msg = result.stderr.decode()
+            print(f"[WARNING] Video combination failed: {error_msg}")
+            return camera_video_path  # Return camera video if combination fails
+    except Exception as e:
+        print(f"[ERROR] Error combining videos: {str(e)}")
+        return camera_video_path  # Return camera video on error
+
+def process_and_send_recording(video_path, start_time, screen_video_path=None):
     """Process video and send email in background thread"""
     try:
+        # Wait a moment for screen recording to finish writing
+        if screen_video_path:
+            time.sleep(1)  # Give screen recording time to finalize
+        
         # Create output path for converted video
         base_name = os.path.splitext(video_path)[0]
         converted_path = f"{base_name}_h264.mp4"
         
+        # First convert camera video to H.264
         if convert_video_to_h264(video_path, converted_path):
-            # Send the converted video
-            send_recording_email(converted_path, start_time)
-            # Optionally remove the original file to save space
+            final_video_path = converted_path
+            
+            # If screen recording exists, combine with camera video
+            if screen_video_path and os.path.exists(screen_video_path):
+                # Convert screen video to H.264 first if needed
+                screen_base = os.path.splitext(screen_video_path)[0]
+                screen_converted = f"{screen_base}_h264.mp4"
+                
+                if convert_video_to_h264(screen_video_path, screen_converted):
+                    # Combine the converted videos
+                    combined_path = f"{base_name}_combined_h264.mp4"
+                    final_video_path = combine_videos(converted_path, screen_converted, combined_path)
+                    
+                    # Clean up intermediate files
+                    if final_video_path == combined_path:
+                        try:
+                            os.remove(converted_path)
+                            os.remove(screen_converted)
+                        except:
+                            pass
+                else:
+                    # Try combining with original screen video
+                    combined_path = f"{base_name}_combined_h264.mp4"
+                    final_video_path = combine_videos(converted_path, screen_video_path, combined_path)
+                    if final_video_path == combined_path:
+                        try:
+                            os.remove(converted_path)
+                        except:
+                            pass
+            
+            # Send the final video
+            send_recording_email(final_video_path, start_time)
+            
+            # Optionally remove original files to save space
             try:
                 os.remove(video_path)
-                print(f"[INFO] Removed original file: {video_path}")
+                if screen_video_path and os.path.exists(screen_video_path):
+                    os.remove(screen_video_path)
+                print(f"[INFO] Removed original files")
             except:
                 pass
         else:
@@ -209,6 +295,12 @@ def stop_recording():
             return
         
         is_recording = False
+        
+        # Get screen recording path before stopping
+        screen_video_path = None
+        if screen_recording_process is not None and recording_start_time:
+            timestamp = recording_start_time.strftime("%Y%m%d_%H%M%S")
+            screen_video_path = os.path.join(recordings_folder, f"screen_{timestamp}.mp4")
         
         # Stop camera recording
         if camera_writer is not None:
@@ -240,7 +332,7 @@ def stop_recording():
             # Start background thread to convert and send email
             email_thread = threading.Thread(
                 target=process_and_send_recording,
-                args=(video_path, start_time),
+                args=(video_path, start_time, screen_video_path),
                 daemon=True
             )
             email_thread.start()
@@ -395,6 +487,28 @@ try:
                 bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             else:
                 bgr_frame = frame
+            
+            # Add timestamp to the video frame
+            current_time = datetime.now()
+            timestamp_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Draw timestamp on frame
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.7
+            thickness = 2
+            color = (0, 255, 0)  # Green color
+            
+            # Get text size for background rectangle
+            (text_width, text_height), baseline = cv2.getTextSize(timestamp_str, font, font_scale, thickness)
+            
+            # Draw semi-transparent background for better visibility
+            overlay = bgr_frame.copy()
+            cv2.rectangle(overlay, (10, 10), (20 + text_width, 40 + text_height), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.6, bgr_frame, 0.4, 0, bgr_frame)
+            
+            # Draw timestamp text
+            cv2.putText(bgr_frame, timestamp_str, (15, 35), font, font_scale, color, thickness)
+            
             camera_writer.write(bgr_frame)
         
         # Draw detection box
