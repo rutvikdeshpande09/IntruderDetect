@@ -111,43 +111,101 @@ def start_screen_recording(timestamp):
     screen_filename = os.path.join(recordings_folder, f"screen_{timestamp}.mp4")
     
     try:
+        # Check if we're using Wayland (x11grab won't work)
+        if os.environ.get('WAYLAND_DISPLAY'):
+            print("[WARNING] Wayland detected. x11grab may not work properly.")
+            print("[INFO] Consider switching to X11 or using alternative screen capture method.")
+        
         # Try to record screen using ffmpeg
         # For Raspberry Pi with X11 display
         if os.environ.get('DISPLAY'):
             # Get actual screen resolution
+            resolution = "1920x1080"  # Default
             try:
                 # Try to get screen resolution from xrandr
                 result = subprocess.run(['xrandr'], capture_output=True, text=True, timeout=2)
                 if result.returncode == 0:
                     # Parse resolution from xrandr output
+                    import re
                     for line in result.stdout.split('\n'):
                         if '*' in line:
                             # Extract resolution (e.g., "1920x1080")
-                            import re
                             match = re.search(r'(\d+)x(\d+)', line)
                             if match:
                                 width, height = match.groups()
                                 resolution = f"{width}x{height}"
                                 print(f"[INFO] Detected screen resolution: {resolution}")
-                            else:
-                                resolution = "1920x1080"
-                            break
-                    else:
-                        resolution = "1920x1080"
-                else:
-                    resolution = "1920x1080"
-            except:
-                resolution = "1920x1080"
+                                break
+            except Exception as e:
+                print(f"[INFO] Could not detect resolution, using default: {resolution}")
             
+            # Try multiple methods for better compatibility with composited displays
+            # Method 1: x11grab with root window capture (better for composited displays)
+            display_var = os.environ.get('DISPLAY')
+            
+            # Try capturing root window directly
             cmd = [
-                'ffmpeg', '-y', '-f', 'x11grab',
+                'ffmpeg', '-y',
+                '-f', 'x11grab',
                 '-framerate', str(fps_target),
-                '-s', resolution,
-                '-i', os.environ.get('DISPLAY') + '+0,0',  # Add offset
-                '-c:v', 'libx264', '-preset', 'ultrafast',
-                '-crf', '23', '-pix_fmt', 'yuv420p',  # Ensure compatible pixel format
+                '-video_size', resolution,
+                '-i', display_var,  # Try without .0 first
+                '-c:v', 'libx264',
+                '-preset', 'ultrafast',
+                '-crf', '23',
+                '-pix_fmt', 'yuv420p',
+                '-threads', '0',
                 screen_filename
             ]
+            
+            # Try the command
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    preexec_fn=os.setsid
+                )
+                # Give it a moment to start
+                time.sleep(1)
+                if process.poll() is None:  # Process is still running
+                    print(f"[INFO] Screen recording started (method 1): screen_{timestamp}.mp4")
+                    return process
+                else:
+                    # Process died, read error
+                    try:
+                        _, stderr_output = process.communicate(timeout=1)
+                        error_msg = stderr_output.decode() if stderr_output else "Unknown error"
+                        print(f"[WARNING] Screen recording method 1 failed: {error_msg[:200]}")
+                    except:
+                        pass
+            except Exception as e:
+                print(f"[WARNING] Screen recording method 1 failed: {str(e)}")
+            
+            # Method 2: Try with explicit root window and offset
+            print("[INFO] Trying alternative screen recording method...")
+            # Try capturing with different options that work better with compositors
+            cmd = [
+                'ffmpeg', '-y',
+                '-f', 'x11grab',
+                '-framerate', str(fps_target),
+                '-s', resolution,
+                '-i', display_var + '+0,0',
+                '-c:v', 'libx264',
+                '-preset', 'ultrafast',
+                '-crf', '23',
+                '-pix_fmt', 'yuv420p',
+                '-draw_mouse', '1',  # Include mouse cursor
+                screen_filename
+            ]
+            
+            # Note: If screen appears blank but cursor is visible, this is a known issue
+            # with x11grab and composited displays. The compositor may be preventing
+            # proper screen capture. You may need to:
+            # 1. Disable composition temporarily
+            # 2. Use a different screen capture tool
+            # 3. Or record screen using alternative methods
+            
         else:
             # Try framebuffer (for headless or direct framebuffer access)
             cmd = [
