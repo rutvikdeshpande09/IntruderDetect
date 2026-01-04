@@ -173,3 +173,21 @@ The console will show:
 [SUCCESS] Videos combined successfully: ... or [ERROR] Video combination failed!
 The code now always attempts to combine the screen recording when it exists, even if it's small or appears blank. If combination fails, you'll see clear error messages explaining why.
 Run it again and check the console output to see what's happening with the screen recording combination.
+
+New Screen Recording Method:
+Screenshot-based capture: Instead of using x11grab, the system now:
+Takes screenshots at regular intervals (30 FPS)
+Saves them temporarily as PNG files
+Encodes them into a video when recording stops
+Multiple fallback methods: Tries these tools in order:
+scrot (common on Raspberry Pi)
+import (ImageMagick)
+PIL ImageGrab (if Pillow is installed)
+xwd + convert (X11 window dump)
+Better compatibility: Works with composited displays since it captures the actual screen content, not just the X11 root window.
+Automatic encoding: After recording stops, screenshots are automatically encoded into an MP4 video using ffmpeg.
+Installation Requirements:
+You may need to install one of these tools on your Raspberry Pi:
+# Option 1: Install scrot (recommended)sudo apt-get install scrot# Option 2: Install ImageMagicksudo apt-get install imagemagick# Option 3: Install Pillow for Pythonpip3 install Pillow
+The system will automatically try each method until one works. The screenshot method should capture the full screen content, including the desktop background and all windows, not just the cursor.
+Run the program again; it should now properly capture and combine the screen recording with the camera video.
