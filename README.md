@@ -154,3 +154,22 @@ Use an alternative screen capture tool like scrot or import (ImageMagick) in a l
 Accept the limitation: The camera video with timestamp should still work, and you'll at least see the cursor movement on screen.
 The code will continue to work and record the camera video properly. The screen recording will capture the cursor movement, which can still be useful for seeing user interaction even if the background isn't visible.
 If screen recording is critical, consider using a different screen capture method or disabling composition during recording.
+
+Fixes:
+Always attempts combination: Even if the screen video is small or blank, it still tries to combine (screen recording is critical).
+Better error handling:
+Returns None on failure instead of silently falling back
+Checks if the combined file exists after creation
+Shows detailed error messages from ffmpeg
+Longer wait time: Waits 3 seconds for screen recording to finalize before processing.
+Detailed logging: Shows file paths, sizes, and each step of the process.
+Fallback handling: If combination fails, falls back to camera video only, but logs the error clearly.
+Added -shortest flag: Handles cases where camera and screen videos have different durations.
+What you'll see:
+The console will show:
+[INFO] Screen recording file found: ... (X bytes)
+[INFO] Converting screen video to H.264...
+[INFO] Combining camera and screen videos...
+[SUCCESS] Videos combined successfully: ... or [ERROR] Video combination failed!
+The code now always attempts to combine the screen recording when it exists, even if it's small or appears blank. If combination fails, you'll see clear error messages explaining why.
+Run it again and check the console output to see what's happening with the screen recording combination.
