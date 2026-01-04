@@ -27,3 +27,30 @@ Record when intruders are detected
 Save and email recordings when they leave
 Resume monitoring for the next detection
 The program displays a live feed with "INTRUDER" labels and a "RECORDING" status indicator when active.
+
+
+Changes Made:
+Added video conversion function: Converts the recorded video to H.264 (MPEG-4 Part 10) using ffmpeg, which is compatible with email clients.
+Modified stop_recording(): After recording stops, it:
+Converts the video to H.264 format
+Sends the converted video via email
+Removes the original file to save space
+Fixed MIME type: Changed from application/octet-stream to video/mp4 so email clients recognize it as a video file.
+How it works now:
+Records video using OpenCV (temporary format)
+When recording stops, converts to H.264 MP4 using ffmpeg
+Sends the converted video via email
+The converted video should play in email clients
+
+
+Changes Made:
+Created process_and_send_recording() function: Handles video conversion and email sending separately.
+Modified stop_recording(): Now starts a background thread to process and send the email, so it doesn't block the main detection loop.
+Updated cleanup(): Prevents duplicate processing when the program exits.
+How it works now:
+When a person leaves, stop_recording() is called immediately.
+The recording stops and saves the video file.
+A background thread starts to convert the video and send the email.
+The main loop continues monitoring for new intruders while the email is being processed.
+The email is sent as soon as the conversion completes (usually within seconds).
+The system continues monitoring while the email is processed in the background, so you'll receive the email notification right after the person leaves, even if the program keeps running.
