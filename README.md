@@ -68,3 +68,26 @@ Record video successfully when an intruder is detected
 Create video files with actual content
 Convert and email the videos properly
 Try running it again and the recording should work correctly now.
+
+Changes Made:
+Added timestamp to video frames: Each frame now includes a green timestamp (YYYY-MM-DD HH:MM:SS) in the top-left with a semi-transparent black background for readability.
+Screen recording integration:
+Screen recording is combined with the camera video side-by-side
+Both videos are converted to H.264 before combining
+The combined video is sent via email
+Video processing:
+Camera video is converted to H.264
+Screen video is converted to H.264 (if it exists)
+Both are combined side-by-side using ffmpeg
+The final combined video is sent via email
+How it works:
+Timestamp: Appears on every frame of the camera video in green text with a dark background
+Screen recording: Recorded simultaneously with the camera video
+Combined output: The email will contain a single video showing:
+Left side: Camera feed with timestamp overlay
+Right side: Screen recording
+The videos are automatically scaled to the same height and combined horizontally. If screen recording fails or isn't available, only the camera video (with timestamp) will be sent.
+When you run the program, you'll see:
+Timestamps on the live display
+Timestamps embedded in the recorded video
+A combined video in your email showing both camera and screen
