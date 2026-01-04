@@ -54,3 +54,17 @@ A background thread starts to convert the video and send the email.
 The main loop continues monitoring for new intruders while the email is being processed.
 The email is sent as soon as the conversion completes (usually within seconds).
 The system continues monitoring while the email is processed in the background, so you'll receive the email notification right after the person leaves, even if the program keeps running.
+
+What I Fixed:
+Added frame conversion: Before writing to the video file, the code now:
+Detects if the frame has 4 channels (XRGB8888 format)
+Extracts the RGB channels (skipping the X/alpha channel)
+Converts RGB to BGR format that VideoWriter expects
+Writes the converted frame
+Proper format handling: The code now handles both 3-channel and 4-channel frames correctly.
+The video should now record properly. The warnings about "expected 3 channels but got 4" should be gone, and the video files will contain actual video data instead of being empty (0.00 MB).
+When you run the program again, it should:
+Record video successfully when an intruder is detected
+Create video files with actual content
+Convert and email the videos properly
+Try running it again and the recording should work correctly now.
