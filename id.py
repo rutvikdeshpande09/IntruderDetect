@@ -145,6 +145,38 @@ def start_screen_recording(timestamp):
         print("[INFO] Continuing with camera recording only...")
         return None
 
+def convert_video_to_h264(input_path, output_path):
+    """Convert video to H.264 format compatible with email clients"""
+    try:
+        print(f"[INFO] Converting video to H.264 format...")
+        cmd = [
+            'ffmpeg', '-y', '-i', input_path,
+            '-c:v', 'libx264', '-preset', 'medium',
+            '-crf', '23', '-c:a', 'aac', '-b:a', '128k',
+            '-movflags', '+faststart',  # Enable streaming/quick start
+            output_path
+        ]
+        
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=300  # 5 minute timeout
+        )
+        
+        if result.returncode == 0:
+            print(f"[INFO] Video converted successfully: {output_path}")
+            return True
+        else:
+            print(f"[WARNING] Video conversion failed: {result.stderr.decode()}")
+            return False
+    except subprocess.TimeoutExpired:
+        print(f"[ERROR] Video conversion timed out")
+        return False
+    except Exception as e:
+        print(f"[ERROR] Video conversion error: {str(e)}")
+        return False
+
 def stop_recording():
     """Stop recording and save files"""
     global is_recording, camera_writer, screen_recording_process, current_recording_path, recording_start_time
@@ -177,9 +209,25 @@ def stop_recording():
             duration = (datetime.now() - recording_start_time).total_seconds()
             print(f"[INFO] Recording duration: {duration:.2f} seconds")
         
-        # Send email with recording
+        # Convert video to H.264 format for email compatibility
         if current_recording_path and os.path.exists(current_recording_path):
-            send_recording_email(current_recording_path, recording_start_time)
+            # Create output path for converted video
+            base_name = os.path.splitext(current_recording_path)[0]
+            converted_path = f"{base_name}_h264.mp4"
+            
+            if convert_video_to_h264(current_recording_path, converted_path):
+                # Send the converted video
+                send_recording_email(converted_path, recording_start_time)
+                # Optionally remove the original file to save space
+                try:
+                    os.remove(current_recording_path)
+                    print(f"[INFO] Removed original file: {current_recording_path}")
+                except:
+                    pass
+            else:
+                # If conversion fails, try sending original (might not work in email)
+                print("[WARNING] Sending original video (may not be compatible with email clients)")
+                send_recording_email(current_recording_path, recording_start_time)
         
         current_recording_path = None
         recording_start_time = None
@@ -222,7 +270,7 @@ This is an automated message from the Raspberry Pi Intruder Detection System.
                 print("[INFO] Consider compressing the video or using a file sharing service.")
             
             with open(video_path, 'rb') as f:
-                part = MIMEBase('application', 'octet-stream')
+                part = MIMEBase('video', 'mp4')  # Use proper MIME type for MP4
                 part.set_payload(f.read())
                 encoders.encode_base64(part)
                 part.add_header(
