@@ -18,6 +18,14 @@ import threading
 import subprocess
 import signal
 import sys
+try:
+    from PIL import ImageGrab
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    print("[WARNING] PIL/Pillow not available, will use alternative screen capture method")
+from PIL import ImageGrab
+import queue
 
 # Email configuration - Update these with your email credentials
 SMTP_SERVER = "smtp.gmail.com"
@@ -51,6 +59,9 @@ detection_frame_count = 0
 absence_frame_count = 0
 camera_writer = None
 screen_recording_process = None
+screen_recording_thread = None
+screen_screenshots_dir = None
+screen_recording_active = False
 recording_start_time = None
 current_recording_path = None
 frame_width = 1920
@@ -99,135 +110,167 @@ def start_recording():
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         camera_writer = cv2.VideoWriter(current_recording_path, fourcc, fps_target, (frame_width, frame_height))
         
-        # Start screen recording in a separate thread
+        # Start screen recording using screenshot method
         screen_recording_process = start_screen_recording(timestamp)
         
         recording_start_time = datetime.now()
         is_recording = True
         print(f"[INFO] Recording started: {recording_filename}")
 
-def start_screen_recording(timestamp):
-    """Start screen recording using ffmpeg"""
-    screen_filename = os.path.join(recordings_folder, f"screen_{timestamp}.mp4")
+def capture_screen_screenshot(screenshot_path):
+    """Capture a single screenshot using available method"""
+    try:
+        # Method 1: Try using scrot (common on Linux/Raspberry Pi)
+        result = subprocess.run(
+            ['scrot', '-q', '100', screenshot_path],
+            capture_output=True,
+            timeout=2
+        )
+        if result.returncode == 0 and os.path.exists(screenshot_path):
+            return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    except Exception:
+        pass
     
     try:
-        # Check if we're using Wayland (x11grab won't work)
-        if os.environ.get('WAYLAND_DISPLAY'):
-            print("[WARNING] Wayland detected. x11grab may not work properly.")
-            print("[INFO] Consider switching to X11 or using alternative screen capture method.")
-        
-        # Try to record screen using ffmpeg
-        # For Raspberry Pi with X11 display
-        if os.environ.get('DISPLAY'):
-            # Get actual screen resolution
-            resolution = "1920x1080"  # Default
-            try:
-                # Try to get screen resolution from xrandr
-                result = subprocess.run(['xrandr'], capture_output=True, text=True, timeout=2)
-                if result.returncode == 0:
-                    # Parse resolution from xrandr output
-                    import re
-                    for line in result.stdout.split('\n'):
-                        if '*' in line:
-                            # Extract resolution (e.g., "1920x1080")
-                            match = re.search(r'(\d+)x(\d+)', line)
-                            if match:
-                                width, height = match.groups()
-                                resolution = f"{width}x{height}"
-                                print(f"[INFO] Detected screen resolution: {resolution}")
-                                break
-            except Exception as e:
-                print(f"[INFO] Could not detect resolution, using default: {resolution}")
-            
-            # Try multiple methods for better compatibility with composited displays
-            # Method 1: x11grab with root window capture (better for composited displays)
-            display_var = os.environ.get('DISPLAY')
-            
-            # Try capturing root window directly
-            cmd = [
-                'ffmpeg', '-y',
-                '-f', 'x11grab',
-                '-framerate', str(fps_target),
-                '-video_size', resolution,
-                '-i', display_var,  # Try without .0 first
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',
-                '-crf', '23',
-                '-pix_fmt', 'yuv420p',
-                '-threads', '0',
-                screen_filename
-            ]
-            
-            # Try the command
-            try:
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    preexec_fn=os.setsid
-                )
-                # Give it a moment to start
-                time.sleep(1)
-                if process.poll() is None:  # Process is still running
-                    print(f"[INFO] Screen recording started (method 1): screen_{timestamp}.mp4")
-                    return process
-                else:
-                    # Process died, read error
-                    try:
-                        _, stderr_output = process.communicate(timeout=1)
-                        error_msg = stderr_output.decode() if stderr_output else "Unknown error"
-                        print(f"[WARNING] Screen recording method 1 failed: {error_msg[:200]}")
-                    except:
-                        pass
-            except Exception as e:
-                print(f"[WARNING] Screen recording method 1 failed: {str(e)}")
-            
-            # Method 2: Try with explicit root window and offset
-            print("[INFO] Trying alternative screen recording method...")
-            # Try capturing with different options that work better with compositors
-            cmd = [
-                'ffmpeg', '-y',
-                '-f', 'x11grab',
-                '-framerate', str(fps_target),
-                '-s', resolution,
-                '-i', display_var + '+0,0',
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',
-                '-crf', '23',
-                '-pix_fmt', 'yuv420p',
-                '-draw_mouse', '1',  # Include mouse cursor
-                screen_filename
-            ]
-            
-            # Note: If screen appears blank but cursor is visible, this is a known issue
-            # with x11grab and composited displays. The compositor may be preventing
-            # proper screen capture. You may need to:
-            # 1. Disable composition temporarily
-            # 2. Use a different screen capture tool
-            # 3. Or record screen using alternative methods
-            
-        else:
-            # Try framebuffer (for headless or direct framebuffer access)
-            cmd = [
-                'ffmpeg', '-y', '-f', 'fbdev',
-                '-framerate', str(fps_target),
-                '-i', '/dev/fb0',
-                '-c:v', 'libx264', '-preset', 'ultrafast',
-                '-crf', '23', '-pix_fmt', 'yuv420p',
-                screen_filename
-            ]
-        
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            preexec_fn=os.setsid  # Create new process group
+        # Method 2: Try using import (ImageMagick)
+        result = subprocess.run(
+            ['import', '-window', 'root', screenshot_path],
+            capture_output=True,
+            timeout=2
         )
-        print(f"[INFO] Screen recording started: screen_{timestamp}.mp4")
-        return process
+        if result.returncode == 0 and os.path.exists(screenshot_path):
+            return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    except Exception:
+        pass
+    
+    try:
+        # Method 3: Try using PIL ImageGrab (if available)
+        if PIL_AVAILABLE:
+            screenshot = ImageGrab.grab()
+            screenshot.save(screenshot_path, 'PNG')
+            if os.path.exists(screenshot_path):
+                return True
+    except Exception:
+        pass
+    
+    try:
+        # Method 4: Try using xwd + convert
+        temp_xwd = screenshot_path + '.xwd'
+        result = subprocess.run(
+            ['xwd', '-root', '-out', temp_xwd],
+            capture_output=True,
+            timeout=2
+        )
+        if result.returncode == 0 and os.path.exists(temp_xwd):
+            # Convert xwd to png
+            subprocess.run(['convert', temp_xwd, screenshot_path], timeout=2)
+            if os.path.exists(screenshot_path):
+                os.remove(temp_xwd)
+                return True
+            if os.path.exists(temp_xwd):
+                os.remove(temp_xwd)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    except Exception:
+        pass
+    
+    return False
+
+def screen_recording_worker(screenshots_dir, timestamp):
+    """Worker thread that captures screenshots at regular intervals"""
+    global screen_recording_active
+    
+    screen_filename = os.path.join(recordings_folder, f"screen_{timestamp}.mp4")
+    frame_count = 0
+    frame_interval = 1.0 / fps_target  # Time between frames
+    
+    print(f"[INFO] Screen recording worker started, saving to: {screenshots_dir}")
+    
+    while screen_recording_active:
+        try:
+            screenshot_path = os.path.join(screenshots_dir, f"frame_{frame_count:06d}.png")
+            
+            if capture_screen_screenshot(screenshot_path):
+                frame_count += 1
+            else:
+                print(f"[WARNING] Failed to capture screenshot {frame_count}")
+            
+            time.sleep(frame_interval)
+        except Exception as e:
+            print(f"[ERROR] Error in screen recording worker: {str(e)}")
+            break
+    
+    # After recording stops, encode screenshots into video
+    print(f"[INFO] Screen recording stopped. Encoding {frame_count} frames to video...")
+    
+    if frame_count > 0:
+        try:
+            # Use ffmpeg to encode screenshots into video
+            cmd = [
+                'ffmpeg', '-y',
+                '-framerate', str(fps_target),
+                '-i', os.path.join(screenshots_dir, 'frame_%06d.png'),
+                '-c:v', 'libx264',
+                '-preset', 'medium',
+                '-crf', '23',
+                '-pix_fmt', 'yuv420p',
+                screen_filename
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=300
+            )
+            
+            if result.returncode == 0 and os.path.exists(screen_filename):
+                file_size = os.path.getsize(screen_filename)
+                print(f"[SUCCESS] Screen video created: {screen_filename} ({file_size} bytes)")
+            else:
+                error_msg = result.stderr.decode() if result.stderr else "Unknown error"
+                print(f"[ERROR] Failed to encode screen video: {error_msg[-300:]}")
+        except Exception as e:
+            print(f"[ERROR] Error encoding screen video: {str(e)}")
+    
+    # Clean up screenshots
+    try:
+        for filename in os.listdir(screenshots_dir):
+            if filename.startswith('frame_'):
+                os.remove(os.path.join(screenshots_dir, filename))
+        os.rmdir(screenshots_dir)
+        print(f"[INFO] Cleaned up screenshot directory")
     except Exception as e:
-        print(f"[WARNING] Could not start screen recording: {str(e)}")
-        print("[INFO] Continuing with camera recording only...")
+        print(f"[WARNING] Could not clean up screenshots: {str(e)}")
+
+def start_screen_recording(timestamp):
+    """Start screen recording using screenshot method"""
+    global screen_recording_thread, screen_screenshots_dir, screen_recording_active
+    
+    try:
+        # Create directory for screenshots
+        screen_screenshots_dir = os.path.join(recordings_folder, f"screenshots_{timestamp}")
+        if not os.path.exists(screen_screenshots_dir):
+            os.makedirs(screen_screenshots_dir)
+        
+        # Start screen recording thread
+        screen_recording_active = True
+        screen_recording_thread = threading.Thread(
+            target=screen_recording_worker,
+            args=(screen_screenshots_dir, timestamp),
+            daemon=True
+        )
+        screen_recording_thread.start()
+        
+        print(f"[INFO] Screen recording started using screenshot method: screen_{timestamp}.mp4")
+        return True  # Return True to indicate success
+    except Exception as e:
+        print(f"[ERROR] Could not start screen recording: {str(e)}")
+        screen_recording_active = False
         return None
 
 def convert_video_to_h264(input_path, output_path):
@@ -347,16 +390,28 @@ def process_and_send_recording(video_path, start_time, screen_video_path=None):
             print(f"[ERROR] Camera video file does not exist: {video_path}")
             return
         
-        # Wait longer for screen recording to finish writing
+        # Wait longer for screen recording to finish encoding
         if screen_video_path:
-            print(f"[INFO] Waiting for screen recording to finalize...")
-            time.sleep(3)  # Give screen recording more time to finalize
-            # Check if screen recording file exists
-            if os.path.exists(screen_video_path):
-                screen_size = os.path.getsize(screen_video_path)
-                print(f"[INFO] Screen recording file found: {screen_video_path} ({screen_size} bytes)")
-            else:
-                print(f"[WARNING] Screen recording file not found: {screen_video_path}")
+            print(f"[INFO] Waiting for screen recording to finalize and encode...")
+            # Wait for the screen recording thread to finish encoding
+            max_wait = 30  # Maximum wait time in seconds
+            wait_interval = 1
+            waited = 0
+            while waited < max_wait:
+                if os.path.exists(screen_video_path):
+                    screen_size = os.path.getsize(screen_video_path)
+                    if screen_size > 1000:  # File exists and has content
+                        print(f"[INFO] Screen recording file found: {screen_video_path} ({screen_size} bytes)")
+                        break
+                time.sleep(wait_interval)
+                waited += wait_interval
+                if waited % 5 == 0:
+                    print(f"[INFO] Still waiting for screen recording... ({waited}s)")
+            
+            if not os.path.exists(screen_video_path):
+                print(f"[WARNING] Screen recording file not found after {max_wait}s: {screen_video_path}")
+            elif os.path.getsize(screen_video_path) < 1000:
+                print(f"[WARNING] Screen recording file is too small: {screen_video_path}")
         
         # Create output path for converted video
         base_name = os.path.splitext(video_path)[0]
@@ -466,9 +521,9 @@ def stop_recording():
         
         is_recording = False
         
-        # Get screen recording path before stopping
+        # Get screen recording path (will be created when recording stops)
         screen_video_path = None
-        if screen_recording_process is not None and recording_start_time:
+        if recording_start_time:
             timestamp = recording_start_time.strftime("%Y%m%d_%H%M%S")
             screen_video_path = os.path.join(recordings_folder, f"screen_{timestamp}.mp4")
         
@@ -478,16 +533,22 @@ def stop_recording():
             camera_writer = None
             print(f"[INFO] Camera recording saved: {current_recording_path}")
         
-        # Stop screen recording
-        if screen_recording_process is not None:
+        # Stop screen recording (screenshot-based method)
+        global screen_recording_active, screen_recording_thread
+        if screen_recording_process is not None or screen_recording_active:
             try:
-                # Send SIGTERM to the process group
-                os.killpg(os.getpgid(screen_recording_process.pid), signal.SIGTERM)
-                screen_recording_process.wait(timeout=5)
+                # Stop the screenshot capture thread
+                screen_recording_active = False
+                if screen_recording_thread and screen_recording_thread.is_alive():
+                    print("[INFO] Waiting for screen recording to finish...")
+                    screen_recording_thread.join(timeout=10)  # Wait up to 10 seconds
+                    if screen_recording_thread.is_alive():
+                        print("[WARNING] Screen recording thread did not finish in time")
                 print("[INFO] Screen recording stopped")
             except Exception as e:
                 print(f"[WARNING] Error stopping screen recording: {str(e)}")
             screen_recording_process = None
+            screen_recording_active = False
         
         # Calculate recording duration
         if recording_start_time:
@@ -603,7 +664,7 @@ This is an automated message from the Raspberry Pi Intruder Detection System.
 
 def cleanup():
     """Cleanup resources"""
-    global camera_writer, screen_recording_process, is_recording
+    global camera_writer, screen_recording_process, screen_recording_active, screen_recording_thread, is_recording
     
     print("[INFO] Cleaning up...")
     
@@ -614,23 +675,21 @@ def cleanup():
         if camera_writer is not None:
             camera_writer.release()
             camera_writer = None
-        if screen_recording_process is not None:
-            try:
-                os.killpg(os.getpgid(screen_recording_process.pid), signal.SIGTERM)
-                screen_recording_process.wait(timeout=2)
-            except:
-                pass
-            screen_recording_process = None
+        
+        # Stop screen recording thread
+        screen_recording_active = False
+        if screen_recording_thread and screen_recording_thread.is_alive():
+            screen_recording_thread.join(timeout=2)
+        screen_recording_process = None
     
     # Clean up any remaining resources
     if camera_writer is not None:
         camera_writer.release()
     
-    if screen_recording_process is not None:
-        try:
-            os.killpg(os.getpgid(screen_recording_process.pid), signal.SIGTERM)
-        except:
-            pass
+    # Stop any remaining screen recording
+    screen_recording_active = False
+    if screen_recording_thread and screen_recording_thread.is_alive():
+        screen_recording_thread.join(timeout=1)
     
     cv2.destroyAllWindows()
     picam2.stop()
