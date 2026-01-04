@@ -177,6 +177,29 @@ def convert_video_to_h264(input_path, output_path):
         print(f"[ERROR] Video conversion error: {str(e)}")
         return False
 
+def process_and_send_recording(video_path, start_time):
+    """Process video and send email in background thread"""
+    try:
+        # Create output path for converted video
+        base_name = os.path.splitext(video_path)[0]
+        converted_path = f"{base_name}_h264.mp4"
+        
+        if convert_video_to_h264(video_path, converted_path):
+            # Send the converted video
+            send_recording_email(converted_path, start_time)
+            # Optionally remove the original file to save space
+            try:
+                os.remove(video_path)
+                print(f"[INFO] Removed original file: {video_path}")
+            except:
+                pass
+        else:
+            # If conversion fails, try sending original (might not work in email)
+            print("[WARNING] Sending original video (may not be compatible with email clients)")
+            send_recording_email(video_path, start_time)
+    except Exception as e:
+        print(f"[ERROR] Error processing recording: {str(e)}")
+
 def stop_recording():
     """Stop recording and save files"""
     global is_recording, camera_writer, screen_recording_process, current_recording_path, recording_start_time
@@ -209,25 +232,19 @@ def stop_recording():
             duration = (datetime.now() - recording_start_time).total_seconds()
             print(f"[INFO] Recording duration: {duration:.2f} seconds")
         
-        # Convert video to H.264 format for email compatibility
+        # Process video and send email in background thread (non-blocking)
         if current_recording_path and os.path.exists(current_recording_path):
-            # Create output path for converted video
-            base_name = os.path.splitext(current_recording_path)[0]
-            converted_path = f"{base_name}_h264.mp4"
+            video_path = current_recording_path
+            start_time = recording_start_time
             
-            if convert_video_to_h264(current_recording_path, converted_path):
-                # Send the converted video
-                send_recording_email(converted_path, recording_start_time)
-                # Optionally remove the original file to save space
-                try:
-                    os.remove(current_recording_path)
-                    print(f"[INFO] Removed original file: {current_recording_path}")
-                except:
-                    pass
-            else:
-                # If conversion fails, try sending original (might not work in email)
-                print("[WARNING] Sending original video (may not be compatible with email clients)")
-                send_recording_email(current_recording_path, recording_start_time)
+            # Start background thread to convert and send email
+            email_thread = threading.Thread(
+                target=process_and_send_recording,
+                args=(video_path, start_time),
+                daemon=True
+            )
+            email_thread.start()
+            print("[INFO] Video processing and email sending started in background...")
         
         current_recording_path = None
         recording_start_time = None
@@ -297,13 +314,26 @@ This is an automated message from the Raspberry Pi Intruder Detection System.
 
 def cleanup():
     """Cleanup resources"""
-    global camera_writer, screen_recording_process
+    global camera_writer, screen_recording_process, is_recording
     
     print("[INFO] Cleaning up...")
     
+    # Only stop recording if still recording (don't process again if already stopped)
     if is_recording:
-        stop_recording()
+        # Just stop the recording, don't process/send email on cleanup
+        is_recording = False
+        if camera_writer is not None:
+            camera_writer.release()
+            camera_writer = None
+        if screen_recording_process is not None:
+            try:
+                os.killpg(os.getpgid(screen_recording_process.pid), signal.SIGTERM)
+                screen_recording_process.wait(timeout=2)
+            except:
+                pass
+            screen_recording_process = None
     
+    # Clean up any remaining resources
     if camera_writer is not None:
         camera_writer.release()
     
