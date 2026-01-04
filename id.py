@@ -119,61 +119,129 @@ def start_recording():
 
 def capture_screen_screenshot(screenshot_path):
     """Capture a single screenshot using available method"""
+    static_method_used = None  # Track which method works
+    
+    # Method 1: Try using ffmpeg with framebuffer (best for Raspberry Pi)
     try:
-        # Method 1: Try using scrot (common on Linux/Raspberry Pi)
+        if os.path.exists('/dev/fb0'):
+            result = subprocess.run(
+                ['ffmpeg', '-y', '-f', 'fbdev', '-video_size', '1920x1080',
+                 '-i', '/dev/fb0', '-vframes', '1', '-pix_fmt', 'rgb24', screenshot_path],
+                capture_output=True,
+                timeout=5
+            )
+            if result.returncode == 0 and os.path.exists(screenshot_path):
+                file_size = os.path.getsize(screenshot_path)
+                if file_size > 1000:  # Make sure it's substantial
+                    static_method_used = 'fbdev'
+                    return True
+    except Exception:
+        pass
+    
+    # Method 2: Try using scrot with root window
+    try:
         result = subprocess.run(
-            ['scrot', '-q', '100', screenshot_path],
+            ['scrot', '-q', '100', '-z', screenshot_path],
             capture_output=True,
-            timeout=2
+            timeout=3
         )
         if result.returncode == 0 and os.path.exists(screenshot_path):
-            return True
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+            file_size = os.path.getsize(screenshot_path)
+            if file_size > 1000:
+                static_method_used = 'scrot'
+                return True
+    except FileNotFoundError:
         pass
     except Exception:
         pass
     
+    # Method 3: Try using import (ImageMagick) with root window
     try:
-        # Method 2: Try using import (ImageMagick)
+        display = os.environ.get('DISPLAY', ':0.0')
         result = subprocess.run(
-            ['import', '-window', 'root', screenshot_path],
+            ['import', '-display', display, '-window', 'root', screenshot_path],
             capture_output=True,
-            timeout=2
+            timeout=3
         )
         if result.returncode == 0 and os.path.exists(screenshot_path):
-            return True
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+            file_size = os.path.getsize(screenshot_path)
+            if file_size > 1000:
+                static_method_used = 'import'
+                return True
+    except FileNotFoundError:
         pass
     except Exception:
         pass
     
+    # Method 4: Try using xwd (X Window Dump) - most reliable for X11
     try:
-        # Method 3: Try using PIL ImageGrab (if available)
+        temp_xwd = screenshot_path + '.xwd'
+        display = os.environ.get('DISPLAY', ':0')
+        result = subprocess.run(
+            ['xwd', '-display', display, '-root', '-out', temp_xwd],
+            capture_output=True,
+            timeout=3
+        )
+        if result.returncode == 0 and os.path.exists(temp_xwd):
+            # Convert xwd to png
+            try:
+                subprocess.run(['convert', temp_xwd, screenshot_path], 
+                             capture_output=True, timeout=3, check=True)
+            except:
+                try:
+                    # Alternative: use xwdtopnm + pnmtopng
+                    pnm_file = screenshot_path + '.pnm'
+                    with open(pnm_file, 'wb') as f:
+                        subprocess.run(['xwdtopnm', temp_xwd], stdout=f, timeout=3, check=True)
+                    with open(screenshot_path, 'wb') as f:
+                        subprocess.run(['pnmtopng', pnm_file], stdout=f, timeout=3, check=True)
+                    if os.path.exists(pnm_file):
+                        os.remove(pnm_file)
+                except:
+                    pass
+            
+            if os.path.exists(screenshot_path):
+                file_size = os.path.getsize(screenshot_path)
+                if file_size > 1000:
+                    if os.path.exists(temp_xwd):
+                        os.remove(temp_xwd)
+                    static_method_used = 'xwd'
+                    return True
+            if os.path.exists(temp_xwd):
+                os.remove(temp_xwd)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    
+    # Method 5: Try using PIL ImageGrab (if available)
+    try:
         if PIL_AVAILABLE:
             screenshot = ImageGrab.grab()
             screenshot.save(screenshot_path, 'PNG')
             if os.path.exists(screenshot_path):
-                return True
+                file_size = os.path.getsize(screenshot_path)
+                if file_size > 1000:
+                    static_method_used = 'PIL'
+                    return True
     except Exception:
         pass
     
+    # Method 6: Try using ffmpeg with x11grab (last resort)
     try:
-        # Method 4: Try using xwd + convert
-        temp_xwd = screenshot_path + '.xwd'
+        display = os.environ.get('DISPLAY', ':0')
         result = subprocess.run(
-            ['xwd', '-root', '-out', temp_xwd],
+            ['ffmpeg', '-y', '-f', 'x11grab', '-video_size', '1920x1080',
+             '-i', display, '-vframes', '1', screenshot_path],
             capture_output=True,
-            timeout=2
+            timeout=5
         )
-        if result.returncode == 0 and os.path.exists(temp_xwd):
-            # Convert xwd to png
-            subprocess.run(['convert', temp_xwd, screenshot_path], timeout=2)
-            if os.path.exists(screenshot_path):
-                os.remove(temp_xwd)
+        if result.returncode == 0 and os.path.exists(screenshot_path):
+            file_size = os.path.getsize(screenshot_path)
+            if file_size > 1000:
+                static_method_used = 'x11grab'
                 return True
-            if os.path.exists(temp_xwd):
-                os.remove(temp_xwd)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except FileNotFoundError:
         pass
     except Exception:
         pass
@@ -186,18 +254,62 @@ def screen_recording_worker(screenshots_dir, timestamp):
     
     screen_filename = os.path.join(recordings_folder, f"screen_{timestamp}.mp4")
     frame_count = 0
+    successful_captures = 0
     frame_interval = 1.0 / fps_target  # Time between frames
     
     print(f"[INFO] Screen recording worker started, saving to: {screenshots_dir}")
+    
+    # Test screenshot capture first and verify it's not black
+    test_screenshot = os.path.join(screenshots_dir, "test.png")
+    test_success = False
+    for attempt in range(3):
+        if capture_screen_screenshot(test_screenshot):
+            if os.path.exists(test_screenshot):
+                # Check if image is not just black
+                try:
+                    img = cv2.imread(test_screenshot)
+                    if img is not None:
+                        # Check if image has non-black pixels
+                        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                        non_black_pixels = cv2.countNonZero(gray)
+                        total_pixels = gray.shape[0] * gray.shape[1]
+                        if non_black_pixels > total_pixels * 0.01:  # At least 1% non-black
+                            print(f"[INFO] Screenshot capture working! Test screenshot verified (not black).")
+                            test_success = True
+                            os.remove(test_screenshot)
+                            break
+                        else:
+                            print(f"[WARNING] Test screenshot is mostly black ({non_black_pixels}/{total_pixels} non-black pixels)")
+                            os.remove(test_screenshot)
+                except:
+                    pass
+        time.sleep(0.5)
+    
+    if not test_success:
+        print(f"[WARNING] Screenshot capture test failed or produces black images.")
+        print(f"[INFO] Make sure you have one of: scrot, imagemagick (import), xwd, or framebuffer access")
     
     while screen_recording_active:
         try:
             screenshot_path = os.path.join(screenshots_dir, f"frame_{frame_count:06d}.png")
             
             if capture_screen_screenshot(screenshot_path):
-                frame_count += 1
+                if os.path.exists(screenshot_path):
+                    file_size = os.path.getsize(screenshot_path)
+                    if file_size > 100:  # Make sure it's not empty
+                        successful_captures += 1
+                        frame_count += 1
+                    else:
+                        # Remove empty file
+                        try:
+                            os.remove(screenshot_path)
+                        except:
+                            pass
+                else:
+                    print(f"[WARNING] Screenshot file not created: {screenshot_path}")
             else:
-                print(f"[WARNING] Failed to capture screenshot {frame_count}")
+                if frame_count % 30 == 0:  # Only print every 30 failed attempts
+                    print(f"[WARNING] Failed to capture screenshot {frame_count}")
             
             time.sleep(frame_interval)
         except Exception as e:
@@ -205,43 +317,58 @@ def screen_recording_worker(screenshots_dir, timestamp):
             break
     
     # After recording stops, encode screenshots into video
-    print(f"[INFO] Screen recording stopped. Encoding {frame_count} frames to video...")
+    print(f"[INFO] Screen recording stopped. Captured {successful_captures} frames. Encoding to video...")
     
-    if frame_count > 0:
+    if successful_captures > 0:
         try:
             # Use ffmpeg to encode screenshots into video
-            cmd = [
-                'ffmpeg', '-y',
-                '-framerate', str(fps_target),
-                '-i', os.path.join(screenshots_dir, 'frame_%06d.png'),
-                '-c:v', 'libx264',
-                '-preset', 'medium',
-                '-crf', '23',
-                '-pix_fmt', 'yuv420p',
-                screen_filename
-            ]
+            # First, check if we have sequential frames
+            frame_files = sorted([f for f in os.listdir(screenshots_dir) if f.startswith('frame_') and f.endswith('.png')])
             
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=300
-            )
-            
-            if result.returncode == 0 and os.path.exists(screen_filename):
-                file_size = os.path.getsize(screen_filename)
-                print(f"[SUCCESS] Screen video created: {screen_filename} ({file_size} bytes)")
+            if len(frame_files) > 0:
+                print(f"[INFO] Found {len(frame_files)} screenshot files to encode")
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-framerate', str(fps_target),
+                    '-i', os.path.join(screenshots_dir, 'frame_%06d.png'),
+                    '-c:v', 'libx264',
+                    '-preset', 'medium',
+                    '-crf', '23',
+                    '-pix_fmt', 'yuv420p',
+                    screen_filename
+                ]
+                
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=300
+                )
+                
+                if result.returncode == 0 and os.path.exists(screen_filename):
+                    file_size = os.path.getsize(screen_filename)
+                    print(f"[SUCCESS] Screen video created: {screen_filename} ({file_size} bytes)")
+                else:
+                    error_msg = result.stderr.decode() if result.stderr else "Unknown error"
+                    print(f"[ERROR] Failed to encode screen video")
+                    print(f"[ERROR] FFmpeg error: {error_msg[-500:]}")
             else:
-                error_msg = result.stderr.decode() if result.stderr else "Unknown error"
-                print(f"[ERROR] Failed to encode screen video: {error_msg[-300:]}")
+                print(f"[ERROR] No screenshot files found to encode")
         except Exception as e:
             print(f"[ERROR] Error encoding screen video: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"[ERROR] No successful screenshots were captured!")
     
     # Clean up screenshots
     try:
         for filename in os.listdir(screenshots_dir):
-            if filename.startswith('frame_'):
-                os.remove(os.path.join(screenshots_dir, filename))
+            if filename.startswith('frame_') or filename == 'test.png':
+                try:
+                    os.remove(os.path.join(screenshots_dir, filename))
+                except:
+                    pass
         os.rmdir(screenshots_dir)
         print(f"[INFO] Cleaned up screenshot directory")
     except Exception as e:
