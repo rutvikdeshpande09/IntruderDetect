@@ -140,3 +140,17 @@ You'll see clear status messages like:
 [INFO] Video processing and email sending started in background...
 [SUCCESS] Email sent successfully! Video was sent to [email]
 Or error messages if something fails
+
+What I've improved:
+Better x11grab options: Tries multiple methods to capture the screen
+Wayland detection: Warns if Wayland is detected (x11grab won't work)
+Better error handling: Checks if the recording process starts successfully
+The blank screen issue:
+This happens because the compositor (window manager) draws the desktop in a way that x11grab can't capture directly. The cursor is visible because it's drawn separately.
+Possible solutions:
+Temporarily disable composition (may affect performance):
+   # In terminal, try disabling composition   # This depends on your window manager
+Use an alternative screen capture tool like scrot or import (ImageMagick) in a loop, though this is less efficient.
+Accept the limitation: The camera video with timestamp should still work, and you'll at least see the cursor movement on screen.
+The code will continue to work and record the camera video properly. The screen recording will capture the cursor movement, which can still be useful for seeing user interaction even if the background isn't visible.
+If screen recording is critical, consider using a different screen capture method or disabling composition during recording.
