@@ -228,63 +228,93 @@ def combine_videos(camera_video_path, screen_video_path, output_path):
 def process_and_send_recording(video_path, start_time, screen_video_path=None):
     """Process video and send email in background thread"""
     try:
+        print(f"[INFO] Starting video processing and email sending...")
+        print(f"[INFO] Camera video: {video_path}")
+        if screen_video_path:
+            print(f"[INFO] Screen video: {screen_video_path}")
+        
+        # Check if camera video exists
+        if not os.path.exists(video_path):
+            print(f"[ERROR] Camera video file does not exist: {video_path}")
+            return
+        
         # Wait a moment for screen recording to finish writing
         if screen_video_path:
-            time.sleep(1)  # Give screen recording time to finalize
+            time.sleep(2)  # Give screen recording time to finalize
         
         # Create output path for converted video
         base_name = os.path.splitext(video_path)[0]
         converted_path = f"{base_name}_h264.mp4"
         
         # First convert camera video to H.264
+        print(f"[INFO] Converting camera video to H.264...")
         if convert_video_to_h264(video_path, converted_path):
             final_video_path = converted_path
             
             # If screen recording exists, combine with camera video
             if screen_video_path and os.path.exists(screen_video_path):
-                # Convert screen video to H.264 first if needed
-                screen_base = os.path.splitext(screen_video_path)[0]
-                screen_converted = f"{screen_base}_h264.mp4"
-                
-                if convert_video_to_h264(screen_video_path, screen_converted):
-                    # Combine the converted videos
-                    combined_path = f"{base_name}_combined_h264.mp4"
-                    final_video_path = combine_videos(converted_path, screen_converted, combined_path)
+                screen_size = os.path.getsize(screen_video_path)
+                if screen_size > 1000:  # Only combine if screen video is not empty
+                    # Convert screen video to H.264 first if needed
+                    screen_base = os.path.splitext(screen_video_path)[0]
+                    screen_converted = f"{screen_base}_h264.mp4"
                     
-                    # Clean up intermediate files
-                    if final_video_path == combined_path:
-                        try:
-                            os.remove(converted_path)
-                            os.remove(screen_converted)
-                        except:
-                            pass
+                    print(f"[INFO] Converting screen video to H.264...")
+                    if convert_video_to_h264(screen_video_path, screen_converted):
+                        # Combine the converted videos
+                        combined_path = f"{base_name}_combined_h264.mp4"
+                        print(f"[INFO] Combining videos...")
+                        final_video_path = combine_videos(converted_path, screen_converted, combined_path)
+                        
+                        # Clean up intermediate files
+                        if final_video_path == combined_path:
+                            try:
+                                os.remove(converted_path)
+                                os.remove(screen_converted)
+                            except:
+                                pass
+                    else:
+                        # Try combining with original screen video
+                        combined_path = f"{base_name}_combined_h264.mp4"
+                        final_video_path = combine_videos(converted_path, screen_video_path, combined_path)
+                        if final_video_path == combined_path:
+                            try:
+                                os.remove(converted_path)
+                            except:
+                                pass
                 else:
-                    # Try combining with original screen video
-                    combined_path = f"{base_name}_combined_h264.mp4"
-                    final_video_path = combine_videos(converted_path, screen_video_path, combined_path)
-                    if final_video_path == combined_path:
-                        try:
-                            os.remove(converted_path)
-                        except:
-                            pass
+                    print(f"[WARNING] Screen recording is empty, sending camera video only")
             
             # Send the final video
-            send_recording_email(final_video_path, start_time)
-            
-            # Optionally remove original files to save space
-            try:
-                os.remove(video_path)
-                if screen_video_path and os.path.exists(screen_video_path):
-                    os.remove(screen_video_path)
-                print(f"[INFO] Removed original files")
-            except:
-                pass
+            print(f"[INFO] Final video path: {final_video_path}")
+            if os.path.exists(final_video_path):
+                email_sent = send_recording_email(final_video_path, start_time)
+                if email_sent:
+                    # Optionally remove original files to save space
+                    try:
+                        os.remove(video_path)
+                        if screen_video_path and os.path.exists(screen_video_path):
+                            os.remove(screen_video_path)
+                        print(f"[INFO] Removed original files")
+                    except:
+                        pass
+                else:
+                    print(f"[ERROR] Email sending failed. Video saved at: {final_video_path}")
+            else:
+                print(f"[ERROR] Final video file does not exist: {final_video_path}")
         else:
             # If conversion fails, try sending original (might not work in email)
-            print("[WARNING] Sending original video (may not be compatible with email clients)")
-            send_recording_email(video_path, start_time)
+            print("[WARNING] H.264 conversion failed, trying to send original video")
+            if os.path.exists(video_path):
+                email_sent = send_recording_email(video_path, start_time)
+                if not email_sent:
+                    print(f"[ERROR] Email sending failed. Video saved at: {video_path}")
+            else:
+                print(f"[ERROR] Original video file does not exist: {video_path}")
     except Exception as e:
         print(f"[ERROR] Error processing recording: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 def stop_recording():
     """Stop recording and save files"""
@@ -344,8 +374,26 @@ def stop_recording():
 def send_recording_email(video_path, start_time):
     """Send recording via email"""
     print(f"[INFO] Preparing to send email with recording...")
+    print(f"[INFO] Video path: {video_path}")
     
     try:
+        # Check if video file exists
+        if not os.path.exists(video_path):
+            print(f"[ERROR] Video file does not exist: {video_path}")
+            return False
+        
+        file_size = os.path.getsize(video_path) / (1024 * 1024)  # Size in MB
+        print(f"[INFO] Video file size: {file_size:.2f} MB")
+        
+        if file_size == 0:
+            print(f"[ERROR] Video file is empty (0 bytes). Cannot send email.")
+            return False
+        
+        # Gmail has a 25MB attachment limit, warn if too large
+        if file_size > 20:
+            print(f"[WARNING] Video file is large ({file_size:.2f} MB). Email may fail.")
+            print("[INFO] Consider compressing the video or using a file sharing service.")
+        
         # Create email message
         msg = MIMEMultipart()
         msg['From'] = SENDER_EMAIL
@@ -369,40 +417,48 @@ This is an automated message from the Raspberry Pi Intruder Detection System.
         msg.attach(MIMEText(body, 'plain'))
         
         # Attach video file
-        if os.path.exists(video_path):
-            file_size = os.path.getsize(video_path) / (1024 * 1024)  # Size in MB
-            print(f"[INFO] Video file size: {file_size:.2f} MB")
-            
-            # Gmail has a 25MB attachment limit, warn if too large
-            if file_size > 20:
-                print(f"[WARNING] Video file is large ({file_size:.2f} MB). Email may fail.")
-                print("[INFO] Consider compressing the video or using a file sharing service.")
-            
-            with open(video_path, 'rb') as f:
-                part = MIMEBase('video', 'mp4')  # Use proper MIME type for MP4
-                part.set_payload(f.read())
-                encoders.encode_base64(part)
-                part.add_header(
-                    'Content-Disposition',
-                    f'attachment; filename= {os.path.basename(video_path)}'
-                )
-                msg.attach(part)
+        print(f"[INFO] Attaching video file: {os.path.basename(video_path)}")
+        with open(video_path, 'rb') as f:
+            part = MIMEBase('video', 'mp4')  # Use proper MIME type for MP4
+            part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header(
+                'Content-Disposition',
+                f'attachment; filename= {os.path.basename(video_path)}'
+            )
+            msg.attach(part)
         
         # Send email
+        print(f"[INFO] Connecting to SMTP server: {SMTP_SERVER}:{SMTP_PORT}")
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
+        print(f"[INFO] Logging in to email account...")
         server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        print(f"[INFO] Sending email to {RECIPIENT_EMAIL}...")
         text = msg.as_string()
         server.sendmail(SENDER_EMAIL, RECIPIENT_EMAIL, text)
         server.quit()
         
         print(f"[INFO] Email sent successfully to {RECIPIENT_EMAIL}")
+        return True
         
-    except smtplib.SMTPAuthenticationError:
+    except smtplib.SMTPAuthenticationError as e:
         print(f"[ERROR] Authentication failed. Please check your email and password.")
+        print(f"[ERROR] Details: {str(e)}")
         print(f"[INFO] For Gmail, you need to use an App Password, not your regular password.")
+        print(f"[INFO] Generate one at: https://myaccount.google.com/apppasswords")
+        return False
+    except smtplib.SMTPException as e:
+        print(f"[ERROR] SMTP error occurred: {str(e)}")
+        return False
+    except FileNotFoundError as e:
+        print(f"[ERROR] Video file not found: {str(e)}")
+        return False
     except Exception as e:
         print(f"[ERROR] Failed to send email: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def cleanup():
     """Cleanup resources"""
