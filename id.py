@@ -114,13 +114,39 @@ def start_screen_recording(timestamp):
         # Try to record screen using ffmpeg
         # For Raspberry Pi with X11 display
         if os.environ.get('DISPLAY'):
+            # Get actual screen resolution
+            try:
+                # Try to get screen resolution from xrandr
+                result = subprocess.run(['xrandr'], capture_output=True, text=True, timeout=2)
+                if result.returncode == 0:
+                    # Parse resolution from xrandr output
+                    for line in result.stdout.split('\n'):
+                        if '*' in line:
+                            # Extract resolution (e.g., "1920x1080")
+                            import re
+                            match = re.search(r'(\d+)x(\d+)', line)
+                            if match:
+                                width, height = match.groups()
+                                resolution = f"{width}x{height}"
+                                print(f"[INFO] Detected screen resolution: {resolution}")
+                            else:
+                                resolution = "1920x1080"
+                            break
+                    else:
+                        resolution = "1920x1080"
+                else:
+                    resolution = "1920x1080"
+            except:
+                resolution = "1920x1080"
+            
             cmd = [
                 'ffmpeg', '-y', '-f', 'x11grab',
                 '-framerate', str(fps_target),
-                '-s', '1920x1080',  # Adjust to your screen resolution
-                '-i', os.environ.get('DISPLAY'),
+                '-s', resolution,
+                '-i', os.environ.get('DISPLAY') + '+0,0',  # Add offset
                 '-c:v', 'libx264', '-preset', 'ultrafast',
-                '-crf', '23', screen_filename
+                '-crf', '23', '-pix_fmt', 'yuv420p',  # Ensure compatible pixel format
+                screen_filename
             ]
         else:
             # Try framebuffer (for headless or direct framebuffer access)
@@ -129,7 +155,8 @@ def start_screen_recording(timestamp):
                 '-framerate', str(fps_target),
                 '-i', '/dev/fb0',
                 '-c:v', 'libx264', '-preset', 'ultrafast',
-                '-crf', '23', screen_filename
+                '-crf', '23', '-pix_fmt', 'yuv420p',
+                screen_filename
             ]
         
         process = subprocess.Popen(
@@ -288,18 +315,21 @@ def process_and_send_recording(video_path, start_time, screen_video_path=None):
             # Send the final video
             print(f"[INFO] Final video path: {final_video_path}")
             if os.path.exists(final_video_path):
+                print(f"[INFO] Video file exists, preparing to send email...")
                 email_sent = send_recording_email(final_video_path, start_time)
                 if email_sent:
+                    print(f"[SUCCESS] Email sent successfully! Video was sent to {RECIPIENT_EMAIL}")
                     # Optionally remove original files to save space
                     try:
                         os.remove(video_path)
                         if screen_video_path and os.path.exists(screen_video_path):
                             os.remove(screen_video_path)
-                        print(f"[INFO] Removed original files")
+                        print(f"[INFO] Cleaned up original files")
                     except:
                         pass
                 else:
                     print(f"[ERROR] Email sending failed. Video saved at: {final_video_path}")
+                    print(f"[INFO] You can manually retrieve the video from: {final_video_path}")
             else:
                 print(f"[ERROR] Final video file does not exist: {final_video_path}")
         else:
@@ -367,6 +397,7 @@ def stop_recording():
             )
             email_thread.start()
             print("[INFO] Video processing and email sending started in background...")
+            print("[INFO] You can continue monitoring while video is processed and emailed.")
         
         current_recording_path = None
         recording_start_time = None
@@ -530,19 +561,32 @@ try:
                 stop_recording()
                 print("[INFO] Monitoring resumed...")
         
+        # Draw detection box
+        display_frame = frame.copy()
+        
         # Record frame if recording
         if is_recording and camera_writer is not None:
-            # Convert from XRGB8888 (4 channels) to BGR (3 channels) for video writer
-            # XRGB8888 format from Picamera2: channels are [X, R, G, B] where X is unused
+            # Convert frame to BGR for video writer
+            # Picamera2 XRGB8888: The format name suggests X-R-G-B, but the actual array might be different
+            # Since display works correctly, the frame is in a format OpenCV can display
+            # We need to convert it properly for VideoWriter which expects BGR
             if len(frame.shape) == 3 and frame.shape[2] == 4:  # XRGB8888 format (4 channels)
-                # Extract RGB channels (skip the X channel at index 0) and convert to BGR
-                rgb_frame = frame[:, :, 1:4]  # Get R, G, B channels
-                bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+                # Try converting using cv2.COLOR_BGRA2BGR (if it's BGRA) or COLOR_RGBA2BGR
+                # First try: assume it's RGBA and convert to BGR
+                try:
+                    bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+                except:
+                    # If that fails, try extracting channels manually
+                    # XRGB8888 might be [X, R, G, B] or [R, G, B, X]
+                    # Try [R, G, B] from channels 1:4 (skip X at start)
+                    rgb_frame = frame[:, :, 1:4].copy()
+                    bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
             elif len(frame.shape) == 3 and frame.shape[2] == 3:  # Already 3 channels
-                # Assume it's RGB and convert to BGR
+                # If it's 3 channels, it might already be BGR or RGB
+                # Since display works, try RGB to BGR conversion
                 bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             else:
-                bgr_frame = frame
+                bgr_frame = frame.copy()
             
             # Add timestamp to the video frame
             current_time = datetime.now()
@@ -552,7 +596,7 @@ try:
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.7
             thickness = 2
-            color = (0, 255, 0)  # Green color
+            color = (0, 255, 0)  # Green color (BGR format)
             
             # Get text size for background rectangle
             (text_width, text_height), baseline = cv2.getTextSize(timestamp_str, font, font_scale, thickness)
@@ -566,9 +610,6 @@ try:
             cv2.putText(bgr_frame, timestamp_str, (15, 35), font, font_scale, color, thickness)
             
             camera_writer.write(bgr_frame)
-        
-        # Draw detection box
-        display_frame = frame.copy()
         if detected and len(face_locations) > 0:
             for (top, right, bottom, left) in face_locations:
                 # Scale back up
