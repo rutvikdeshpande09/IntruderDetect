@@ -119,3 +119,24 @@ Video file doesn't exist or is empty
 SMTP authentication failure
 Network connectivity issues
 File too large for email
+
+Fixes Applied:
+Fixed blue camera issue:
+Changed color conversion to use cv2.COLOR_RGBA2BGR for XRGB8888 format
+Added fallback if the first conversion fails
+This should fix the blue tint in recorded videos
+Improved screen recording:
+Added automatic screen resolution detection using xrandr
+Added proper pixel format specification (yuv420p) for better compatibility
+Added display offset to capture the correct screen area
+Better status messages:
+Added [SUCCESS] message when email is sent
+Added file path information for debugging
+Added clearer progress messages throughout the process
+What to expect:
+Camera video should have correct colors (no more blue tint)
+Screen recording should work better with automatic resolution detection
+You'll see clear status messages like:
+[INFO] Video processing and email sending started in background...
+[SUCCESS] Email sent successfully! Video was sent to [email]
+Or error messages if something fails
